@@ -9,3 +9,10 @@ virtualenv .venv
 source .venv/bin/activate
 pip install -e .
 ```
+
+## Testing
+
+```bash
+pip install pytest
+pytest
+```

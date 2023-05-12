@@ -8,6 +8,8 @@ import queue
 import time
 
 import jax
+import jax.numpy as jnp
+import jax.random as jrandom
 import jax.tree_util as jtu
 from jaxlib import xla_extension
 
@@ -47,6 +49,7 @@ class Dataset:
     while True:
       try:
         return next(self._it)
+      # Sometimes we get these junk errors when the iterator is exhausted.
       except (StopIteration, xla_extension.XlaRuntimeError, RuntimeError) as e:
         logging.info('Dataset::__next__: stopping')
         logging.debug('Dataset::__next__: caught error: %r', e)
@@ -111,16 +114,25 @@ class Dataset:
       return tree_starmap(partial(jnp.stack, axis=axis), batch)
     return self.from_next_fn(next_fn)
 
-  def filter(self, predicate: Callable[[PyTree], bool]) -> 'Dataset':
+  def enumerate(self) -> 'Dataset':
+    """Yield (index, element) pairs.
+
+    NOTE: this disables jit compatibility.
+    """
+    d = self.__class__(enumerate(self))
+    if self._is_jittable:
+      logging.info('Dataset::prefetch: disabling jit compatibility.')
+    assert not d._is_jittable
+    return d
+
+  def filter(self, f: Callable[[PyTree], bool]) -> 'Dataset':
     """Get a new dataset whose next_fn filters out elements.
 
     NOTE: this disables jit compatibility.
     """
-    next_fn = lambda: next(filter(predicate, iter(self)))
-    d = self.from_next_fn(next_fn)
+    d = self.__class__(filter(f, self))
     if self._is_jittable:
       logging.info('Dataset::filter: disabling jit compatibility.')
-      logging.warning('Dataset::filter: filtering a jittable dataset might be leading to more calls to `as_jit_compatible` than needed.')
     assert not d._is_jittable
     return d
 
@@ -134,13 +146,14 @@ class Dataset:
       d._is_jittable = True
     return d
 
-  def jit(self, device: jax.Device | None = None, **jit_kwargs) -> 'Dataset':
-    """Get a new dataset jitting the `next_fn`."""
-    assert self._is_jittable, 'Dataset::jit: dataset is not jittable.'
-    # Pin computation to the CPU by default.
-    if device is None:
-      device = jax.devices("cpu")[0]
-    jit_kwargs['device'] = device
+  def jit(self, **jit_kwargs) -> 'Dataset':
+    """Get a new dataset jitting the `next_fn`.
+
+    NOTE: this does NOT pin the computation to the CPU by default. The user
+    should use `jax.default_device` context managers to do this.
+    """
+    if not self._is_jittable:
+      raise ValueError('Dataset::jit: dataset is not jittable.')
     return self.fmap(partial(jax.jit, **jit_kwargs))
 
   def map(self, f: Callable[[PyTree], PyTree]) -> 'Dataset':
@@ -150,10 +163,7 @@ class Dataset:
       d._is_jittable = True
     return d
 
-  def padded_batch(self, batch_size: int) -> 'Dataset':
-    raise NotImplementedError
-
-  def prefetch(self, bufsize: int) -> 'Dataset':
+  def prefetch(self, bufsize: int = 1) -> 'Dataset':
     """Prefetch elements from the dataset via multithreading.
 
     NOTE: this disables jit compatibility.
@@ -177,45 +187,42 @@ class Dataset:
             dataset_consumed = True
           futures = [f for f in futures if not f.done()]
           assert len(futures) <= bufsize
-    return self.__class__(it())
+    d = self.__class__(it())
+    if self._is_jittable:
+      logging.info('Dataset::prefetch: disabling jit compatibility.')
+    assert not d._is_jittable
+    return d
+
+  def repeat(self, n: int | None = None) -> 'Dataset':
+    """Repeat the dataset n times (or infinitely if left unspecified).
+
+    NOTE: this disables jit compatibility.
+    """
+    assert n is None or n > 0
+    # `itertools.cycle` unfortunately caches the first cycle.
+    def it():
+      i = 0
+      it1 = self
+      while (n is None or i < n):
+        it1, it2 = itertools.tee(it1)
+        yield from it2
+        i += 1
+    d = self.__class__(it())
+    if self._is_jittable:
+      logging.info('Dataset::repeat: disabling jit compatibility.')
+    assert not d._is_jittable
+    return d
 
   def sleep(self, seconds: int | float) -> 'Dataset':
+    """Get a new dataset that sleeps for `seconds` before yielding an element.
+
+    Especially useful for debugging prefetch performance.
+    """
     def next_fn():
       time.sleep(seconds)
       return self.__next__()
     d = self.from_next_fn(next_fn)
+    if self._is_jittable:
+      logging.info('Dataset::repeat: disabling jit compatibility.')
     assert not d._is_jittable
     return d
-
-
-# TODO(danielwatson6): move to its own test module.
-if __name__ == '__main__':
-  logging.basicConfig(level=logging.INFO)
-  import collections
-  import json
-  import jax.numpy as jnp
-
-  d = Dataset.from_pytree_slices(jnp.arange(100))
-  d = d.batch(8)
-  d = d.sleep(0.1)
-  d = d.map(lambda x: x * 2)
-  d = d.as_jit_compatible()
-  d = d.jit()
-  d = d.prefetch(1)
-
-  stats = collections.defaultdict(lambda: 0)
-  while True:
-    try:
-      tic = time.time()
-      batch = next(d)
-      stats['time: batch = next(d)'] += time.time() - tic
-      print(batch)
-      tic = time.time()
-      time.sleep(0.5)
-      stats['time: <expensive thing with batch>'] += time.time() - tic
-    except StopIteration:
-      break
-
-  print(json.dumps(stats, indent=2, sort_keys=True))
-
-
