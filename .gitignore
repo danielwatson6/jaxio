@@ -1,11 +1,21 @@
 # python
-.venv/
 *.py[cod]
 __pycache__/
+
+# setuptools
 build/
 dist/
 *.egg-info/
+
+# virtualenv
+.venv*/
+
+# pytest
 .pytest_cache/
+
+# sphinx
+docs/_build/
+docs/generated/
 
 # macOS
 .DS_Store
