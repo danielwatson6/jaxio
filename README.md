@@ -74,6 +74,6 @@ To upload to pypi:
 ```bash
 deactivate 2> /dev/null
 python -m build .
-twine upload -r testpypi dist/*
-twine upload dist/*
+twine upload -r testpypi dist/*  # try it out first
+# twine upload dist/*
 ```
