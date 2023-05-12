@@ -66,6 +66,9 @@ cd docs && make html && cd -
 source .venv/bin/activate
 ```
 
+**NOTE:** when pushing to `main`, readthedocs will re-build the docs based on the
+latest version in pypi.
+
 To upload to pypi:
 
 ```bash
