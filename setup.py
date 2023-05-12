@@ -1,10 +1,5 @@
-import os
-import re
 from setuptools import setup
 
-
-with open(os.path.join(os.path.dirname(__file__), 'requirements.txt')) as f:
-  requirements = re.sub(r'\n+', '\n', f.read()).strip().split('\n')
 
 setup(
     name='jaxio',
@@ -13,6 +8,6 @@ setup(
     long_description='An attempt to do input pipelines purely relying on JAX, with support for jitting iterators.',
     author='Daniel Watson',
     packages=['jaxio'],
-    install_requires=requirements,
+    install_requires=['jax', 'jaxlib'],
     license_files=('LICENSE.txt',),
 )

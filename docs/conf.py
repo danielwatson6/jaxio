@@ -30,3 +30,11 @@ html_theme_options = {
     "toc_title": "In this page",
     "show_toc_level": 2,
 }
+
+html_context = {
+    "display_github": True,
+    "github_user": "danielwatson6",
+    "github_repo": "jaxio", # Repo name
+    "github_version": "main",
+    "conf_py_path": "/source/", # Path in the checkout to the docs root
+}

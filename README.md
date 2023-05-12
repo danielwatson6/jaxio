@@ -38,6 +38,7 @@ pip install jaxio
 One-time setup:
 
 ```bash
+pip install 'build[virtualenv]' twine
 virtualenv .venv
 virtualenv .venv-docs
 source .venv-docs/bin/activate
@@ -64,4 +65,13 @@ pip install -e .
 rm -rf docs/_build
 cd docs && make html && cd -
 source .venv/bin/activate
+```
+
+To upload to pypi:
+
+```bash
+deactivate 2> /dev/null
+python -m build .
+twine upload -r testpypi dist/*
+twine upload dist/*
 ```
