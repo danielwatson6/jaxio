@@ -43,7 +43,6 @@ virtualenv .venv
 virtualenv .venv-docs
 source .venv-docs/bin/activate
 pip install --upgrade pip
-pip install -e .
 pip install -r docs/requirements.txt
 source .venv/bin/activate
 pip install --upgrade pip
@@ -57,7 +56,7 @@ To test the package locally:
 pytest
 ```
 
-To re-generate the documentation pages:
+To re-generate the documentation pages locally:
 
 ```bash
 source .venv-docs/bin/activate
