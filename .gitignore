@@ -1,0 +1,15 @@
+# python
+.venv/
+*.py[cod]
+__pycache__/
+build/
+dist/
+*.egg-info/
+
+# macOS
+.DS_Store
+Icon?
+
+# editors
+.vscode/
+*.swp
