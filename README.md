@@ -1,4 +1,4 @@
-# datax
+# jaxio
 
 An attempt to do input pipelines purely relying on JAX, with support for jitting iterators.
 

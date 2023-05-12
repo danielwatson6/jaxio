@@ -9,7 +9,6 @@ import time
 
 import jax
 import jax.numpy as jnp
-import jax.random as jrandom
 import jax.tree_util as jtu
 from jaxlib import xla_extension
 
@@ -63,9 +62,7 @@ class Dataset:
   @classmethod
   def from_pytree_slices(cls, pytree: PyTree, axis: int = 0):
     """Create a dataset yields the slices of a pytree along a given axis."""
-    return cls(
-        x for x in jtu.tree_map(partial(unstack, axis=axis), pytree)
-    )
+    return cls(x for x in jtu.tree_map(partial(unstack, axis=axis), pytree))
 
   def as_jit_compatible(self) -> 'Dataset':
     """Enable JIT compatibility.
@@ -84,6 +81,7 @@ class Dataset:
     next_fn = itertools.chain([head], self).__next__
     j_next_fn = lambda: jax.experimental.io_callback(next_fn, head)
     d = self.from_next_fn(j_next_fn)
+    logging.info('Dataset::as_jit_compatible: enabling jit compatibility')
     d._is_jittable = True
     return d
 
@@ -93,6 +91,7 @@ class Dataset:
     NOTE: this drops the last batch if it is not full.
     """
     if self._is_jittable:
+      logging.info('Dataset::batch: jit compatible')
       def next_fn():
         # TODO(danielwatson6): try implementing with vmap (disabling ordering
         # required) and see if it's faster.
@@ -109,6 +108,7 @@ class Dataset:
       d._is_jittable = True
       return d
 
+    logging.info('Dataset::batch: not jit compatible')
     def next_fn():
       batch = []
       for _ in range(batch_size):
