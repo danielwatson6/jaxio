@@ -57,10 +57,12 @@ class Dataset:
 
   @classmethod
   def from_next_fn(cls, next_fn: NextFn) -> 'Dataset':
+    """Create a dataset that infinitely yields fresh calls to `next_fn`."""
     return cls(next_fn() for _ in iter(int, 1))
 
   @classmethod
   def from_pytree_slices(cls, pytree: PyTree, axis: int = 0):
+    """Create a dataset yields the slices of a pytree along a given axis."""
     return cls(
         x for x in jtu.tree_map(partial(unstack, axis=axis), pytree)
     )

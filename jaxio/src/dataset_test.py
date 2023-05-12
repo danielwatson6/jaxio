@@ -3,13 +3,13 @@ import time
 import jax.numpy as jnp
 import pytest
 
-import datax
+import jaxio
 
 
 def test_constructor():
   data = range(10)
 
-  d = datax.Dataset(data)
+  d = jaxio.Dataset(data)
   assert not d._is_jittable
   assert list(d) == list(data)
 
@@ -17,7 +17,7 @@ def test_constructor():
 def test_from_pytree_slices():
   data = jnp.arange(10)
 
-  d = datax.Dataset.from_pytree_slices(data)
+  d = jaxio.Dataset.from_pytree_slices(data)
   assert not d._is_jittable
   assert jnp.all(jnp.stack(list(d)) == data)
 
@@ -25,7 +25,7 @@ def test_from_pytree_slices():
 def test_as_jit_compatible():
   data = jnp.arange(10)
 
-  d = datax.Dataset.from_pytree_slices(data)
+  d = jaxio.Dataset.from_pytree_slices(data)
   d = d.as_jit_compatible()
   assert d._is_jittable
   assert jnp.all(jnp.stack(list(d)) == data)
@@ -38,7 +38,7 @@ def test_batch():
 
   expected = jnp.arange((n // b) * b).reshape(n // b, b)
 
-  d = datax.Dataset(range(n))
+  d = jaxio.Dataset(range(n))
   d = d.batch(b)
   assert not d._is_jittable
   d_list = list(d)
@@ -47,13 +47,13 @@ def test_batch():
   assert jnp.all(jnp.stack(d_list) == expected)
 
   # jit-compatible batch
-  d = datax.Dataset.from_pytree_slices(jnp.arange(n))
+  d = jaxio.Dataset.from_pytree_slices(jnp.arange(n))
   d = d.as_jit_compatible().batch(b)
   assert d._is_jittable
   assert jnp.all(jnp.stack(list(d)) == expected)
 
   # jit batch
-  d = datax.Dataset.from_pytree_slices(jnp.arange(n))
+  d = jaxio.Dataset.from_pytree_slices(jnp.arange(n))
   d = d.as_jit_compatible().batch(b).jit()
   assert jnp.all(jnp.stack(list(d)) == expected)
 
@@ -61,7 +61,7 @@ def test_batch():
 def test_enumerate():
   data = range(10)
 
-  d = datax.Dataset(data)
+  d = jaxio.Dataset(data)
   d = d.enumerate()
   assert not d._is_jittable
   assert list(d) == list(enumerate(data))
@@ -71,7 +71,7 @@ def test_filter():
   data = range(10)
   filter_fn = lambda x: x % 2 == 0
 
-  d = datax.Dataset(data)
+  d = jaxio.Dataset(data)
   d = d.filter(filter_fn)
   assert not d._is_jittable
   assert list(d) == list(filter(filter_fn, data))
@@ -83,19 +83,19 @@ def test_fmap():
   transform = lambda next_fn: (lambda: next_fn() * 2)
   expected = jnp.stack([transform(lambda: x)() for x in list(data)])
 
-  d = datax.Dataset(data)
+  d = jaxio.Dataset(data)
   d = d.fmap(transform)
   assert not d._is_jittable
   assert jnp.all(jnp.stack(list(d)) == expected)
 
   # jit-compatible fmap
-  d = datax.Dataset(data)
+  d = jaxio.Dataset(data)
   d = d.as_jit_compatible().fmap(transform)
   assert d._is_jittable
   assert jnp.all(jnp.stack(list(d)) == expected)
 
   # jit fmap
-  d = datax.Dataset(data)
+  d = jaxio.Dataset(data)
   d = d.as_jit_compatible().fmap(transform)
   assert d._is_jittable
   d = d.jit()
@@ -105,11 +105,11 @@ def test_fmap():
 def test_jit():
   n = 10
 
-  d = datax.Dataset(range(n))
+  d = jaxio.Dataset(range(n))
   with pytest.raises(ValueError):
     d.jit()
 
-  d = datax.Dataset.from_pytree_slices(jnp.arange(n))
+  d = jaxio.Dataset.from_pytree_slices(jnp.arange(n))
   d = d.as_jit_compatible().jit()
   assert d._is_jittable
   assert jnp.all(jnp.stack(list(d)) == jnp.arange(n))
@@ -121,19 +121,19 @@ def test_map():
 
   expected = [f(x) for x in range(n)]
 
-  d = datax.Dataset(range(n))
+  d = jaxio.Dataset(range(n))
   d = d.map(f)
   assert not d._is_jittable
   assert list(d) == expected
 
   # jit-compatible map
-  d = datax.Dataset.from_pytree_slices(jnp.arange(n))
+  d = jaxio.Dataset.from_pytree_slices(jnp.arange(n))
   d = d.as_jit_compatible().map(f)
   assert d._is_jittable
   assert jnp.all(jnp.stack(list(d)) == jnp.stack(expected))
 
   # jit map
-  d = datax.Dataset.from_pytree_slices(jnp.arange(n))
+  d = jaxio.Dataset.from_pytree_slices(jnp.arange(n))
   d = d.as_jit_compatible().map(f)
   assert d._is_jittable
   d = d.jit()
@@ -149,7 +149,7 @@ def test_prefetch():
 
   slow_io_time = 0.0
   slow_result = []
-  d = datax.Dataset(range(n)).sleep(dataset_sleep_secs)
+  d = jaxio.Dataset(range(n)).sleep(dataset_sleep_secs)
   assert not d._is_jittable
   for _ in range(n):
     tic = time.time()
@@ -160,7 +160,7 @@ def test_prefetch():
 
   fast_io_time = 0.0
   fast_result = []
-  d = datax.Dataset(range(n)).sleep(dataset_sleep_secs).prefetch()
+  d = jaxio.Dataset(range(n)).sleep(dataset_sleep_secs).prefetch()
   assert not d._is_jittable
   for _ in range(n):
     tic = time.time()
@@ -175,7 +175,7 @@ def test_prefetch():
 def test_repeat():
   n = 3
 
-  d = datax.Dataset(range(n))
+  d = jaxio.Dataset(range(n))
   d = d.repeat()
   assert not d._is_jittable
   for _ in range(n):
@@ -185,7 +185,7 @@ def test_repeat():
     next(d)
   assert next(d) == 0
 
-  d = datax.Dataset(range(n))
+  d = jaxio.Dataset(range(n))
   d = d.repeat(2)
   for _ in range(n):
     next(d)
