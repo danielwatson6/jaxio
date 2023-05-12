@@ -1,1 +1,1 @@
-from jaxio.src.dataset import Dataset
+from .src.dataset import Dataset
