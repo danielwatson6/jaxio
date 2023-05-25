@@ -5,8 +5,10 @@
 # TODO(danielwatson6): test sleep
 # TODO(danielwatson6): test unbatch
 # TODO(danielwatson6): test from_pytree_slices with actual pytree
+# TODO(danielwatson6): test unusable checks
+# TODO(danielwatson6): test monad laws
 
-from functools import partial
+import functools
 import time
 
 import jax
@@ -16,6 +18,9 @@ import numpy as np
 import pytest
 
 import jaxio
+
+
+partial = functools.partial
 
 
 def test_constructor():

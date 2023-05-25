@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Sequence
+from typing import Any, Generic, Type, TypeVar
+
 import concurrent.futures
-from functools import partial
+import functools
 import itertools
 import logging
 import operator as op
 import queue
 import time
-from typing import Generic, Type, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -20,15 +21,19 @@ from jaxlib import xla_extension
 import numpy as np
 
 
-PyTree = jtu.PyTreeDef
+PyTree = Any
 
+S = TypeVar('S', PyTree)
 T = TypeVar('T', PyTree)
 U = TypeVar('U', PyTree)
 
 NextFn = Callable[[], T]
 
 
-compose = lambda f, g: (lambda *a, **kw: f(g(*a, **kw)))
+at = lambda x, indices: x[indices]
+compose2 = lambda f, g: (lambda *a, **kw: f(g(*a, **kw)))
+compose = lambda *fs: functools.reduce(compose2, fs)
+partial = functools.partial
 ret = lambda x: (lambda: x)
 
 
@@ -73,7 +78,7 @@ def unstack(x: jax.Array, axis: int = 0) -> jax.Array:
   Returns:
     The unstacked array.
   """
-  # This is faster than the nicer `tuple(jnp.moveaxis(x, 0, axis))` because it
+  # This is faster than the nicer `tuple(jnp.moveaxis(x, axis, 0))` because it
   # avoids an XLA transpose:
   # https://github.com/google/jax/blob/main/jax/_src/numpy/lax_numpy.py#L896
   return jtu.tree_map(
@@ -119,57 +124,70 @@ class Dataset(Generic[T]):
   """
 
   def __init__(self: Dataset[T], it: Iterable[T]) -> None:
-    """Constructor.
-
-    Args:
-      it: an arbitrary python iterable, will be converted to a python iterator
-        automatically.
-    """
     self._it = iter(it)
     self._is_jittable = False
-    # TODO(danielwatson6): cardinality?
-    # TODO(danielwatson6): should we raise upon attempt to get next element if
-    # the dataset has been transformed?
+    self._cardinality = -1
+    self._unusable = False
 
   def __iter__(self: Dataset[T]) -> Dataset[T]:
     return self
 
   def __next__(self: Dataset[T]) -> T:
-    while True:
-      try:
-        return next(self._it)
-      # Sometimes we get these junk errors when the iterator is exhausted.
-      except (StopIteration, xla_extension.XlaRuntimeError, RuntimeError) as e:
-        logging.info('dataset::Dataset.__next__: stopping')
-        logging.debug('dataset::Dataset.__next__: caught error: %r', e)
-        raise StopIteration
+    if self._unusable:
+      raise ValueError(
+          'dataset::Dataset.__next__: attempting to call a dataset that has '
+          'been transformed, this can lead to unexpected behavior'
+      )
+    try:
+      return self.next_fn()
+    # Sometimes we get this junk when the iterator is exhausted.
+    except (StopIteration, xla_extension.XlaRuntimeError, RuntimeError) as e:
+      logging.info('dataset::Dataset.__next__: stopping')
+      logging.debug('dataset::Dataset.__next__: caught error: %r', e)
+      raise StopIteration
 
-  # TODO(danielwatson6): implement
   def __len__(self: Dataset[T]) -> int:
-    """Returns the length of the dataset, or -1 if unknown.
+    return self._cardinality
 
-    .. warning::
-      This isn't implemented yet.
+  def __lshift__(self: Dataset[T], f: Callable[[T], Dataset[U]]) -> Dataset[U]:
+    return self.flat_map(f)
 
+  def __rrshift__(self: Dataset[T], f: Callable[[T], Dataset[U]]) -> Dataset[U]:
+    return self.flat_map(f)
+
+  @property
+  def next_fn(self: Dataset[T]) -> NextFn[T]:
+    """The next function of the dataset without checks or other side effects."""
+    return (
+        self._it.next_fn if isinstance(self._it, Dataset) else self._it.__next__
+    )
+
+  @classmethod
+  def from_iter(cls: Type[Dataset[T]], it: Iterable[T]) -> Dataset[T]:
+    """Create a dataset from an iterable.
+
+    Args:
+      it: the iterable to be wrapped.
     Returns:
-      The length of the dataset, or -1 if unknown.
+      A new dataset yielding the elements of the iterable.
     """
-    return -1
+    return cls(iter(it))
 
-  # TODO(danielwatson6): docs
-  def __rshift__(self: Dataset[T], f: Callable[[T], Dataset[U]]) -> Dataset[U]:
-    """Shortcut for `flat_map`."""
-    return self.flat_map(f)
+  @classmethod
+  def from_pytree(cls: Type[Dataset[T]], pytree: U) -> Dataset[U]:
+    """Create a single-element dataset from a pytree.
 
-  # TODO(danielwatson6): docs
-  def __rlshift__(self: Dataset[T], f: Callable[[T], Dataset[U]]) -> Dataset[U]:
-    """Shortcut for `flat_map`."""
-    return self.flat_map(f)
+    Args:
+      pytree: the pytree to be wrapped.
+    Returns:
+      A new dataset yielding the pytree.
+    """
+    return cls(pytree for _ in range(1))
 
   @classmethod
   def from_pytree_slices(
-      cls: Type[Dataset[T]], pytree: T, axis: int = 0
-  ) -> Dataset[T]:
+      cls: Type[Dataset[T]], pytree: U, axis: int = 0
+  ) -> Dataset[U]:
     """Create a dataset yields the slices of a pytree along a given axis.
 
     This is mostly useful for debugging, as the whole data lives in memory.
@@ -183,7 +201,14 @@ class Dataset(Generic[T]):
     Returns:
       A new dataset yielding the slices of the pytree along the given axis.
     """
-    return cls(x for x in jtu.tree_map(partial(unstack, axis=axis), pytree))
+    # WIP(danielwatson6): i think this will be wrong for actual pytrees
+    # return cls(x for x in jtu.tree_map(partial(unstack, axis=axis), pytree))
+    return cls.unit(pytree)
+
+  @classmethod
+  def unit(cls: Type[Dataset[T]], pytree: U) -> Dataset[U]:
+    """Monadic alias for ``Dataset.from_pytree(pytree)``."""
+    return cls.from_pytree(pytree)
 
   def as_jit_compatible(self: Dataset[T]) -> Dataset[T]:
     """Enable JIT compatibility.
@@ -195,16 +220,23 @@ class Dataset(Generic[T]):
       A new dataset that is jit compatible.
     """
     if self._is_jittable:
-      logging.warning('dataset::Dataset.as_jit_compatible: already jit compatible, returning unchanged dataset')
+      logging.warning(
+          'dataset::Dataset.as_jit_compatible: already jit compatible, '
+          'returning unchanged dataset'
+      )
       return self
 
     head, d = self.peek()
     if not all(isinstance(x, jnp.ndarray) for x in jtu.tree_leaves(head)):
-      raise ValueError(f'dataset::Dataset.as_jit_compatible: elements must all be JAX arrays, got type {type(head)}: {head}')
-
+      raise ValueError(
+          'dataset::Dataset.as_jit_compatible: elements must all be JAX '
+          f'arrays, got type {type(head)}: {head}'
+      )
     iocall = partial(jax.experimental.io_callback, result_shape_dtypes=head)
     d = d.transform(partial(partial, iocall))
-    logging.info('dataset::Dataset.as_jit_compatible: enabling jit compatibility')
+    logging.info(
+        'dataset::Dataset.as_jit_compatible: enabling jit compatibility'
+    )
     d._is_jittable = True
     return d
 
@@ -218,7 +250,7 @@ class Dataset(Generic[T]):
 
     The new dataset will use a more efficient batching (compatible with jit) if
     the current dataset is jit compatible. We can't use it otherwise because
-    `jax.lax.scan` compiles.
+    ``jax.lax.scan`` compiles.
 
     .. note::
       This drops the last batch if it is not full.
@@ -229,29 +261,48 @@ class Dataset(Generic[T]):
     Args:
       batch_size: the size of the batches to yield.
       axis: the axis to stack the batches along.
-      deterministic: if `False`,
+      deterministic: if ``False``, will use vmap, which will result in
+        nondeterministic ordering of batch elements.
     Returns:
       A new dataset that yields batches of data.
     """
     if self._is_jittable:
       logging.info('dataset::Dataset.batch: jit compatible')
-      transform = partial(
-          vscanzero if deterministic else vmapzero, batch_size=batch_size
-      )
-      d = self.transform(transform)
+      if deterministic:
+        logging.debug('dataset::Dataset.batch: deterministic')
+        transform = vscanzero
+      else:
+        logging.warning(
+            'dataset::Dataset.batch: nondeterministic batching might change in '
+            'the future due to weird JAX semantics of, e.g., vmap of '
+            'scan/while_loop of io_callback. See: '
+            'https://jax.readthedocs.io/en/latest/notebooks/external_callbacks.html'
+        )
+        transform = vmapzero
+      d = self.transform(partial(transform, batch_size=batch_size))
       if axis != 0:
         moveaxis = partial(jnp.moveaxis, source=0, dest=axis)
         d = d.map(partial(jtu.tree_map, moveaxis))
       return d
 
     logging.info('dataset::Dataset.batch: not jit compatible')
-    def it() -> Iterator[U]:
+    def makeit() -> Iterator[U]:
       while True:
         batch = tuple(itertools.islice(self, batch_size))
         if len(batch) != batch_size:
           return
         yield tree_starmap(partial(np.stack, axis=axis), batch)
-    return self.__class__(it())
+    d = self.__class__(makeit())
+    self._unusable = True
+    return d
+
+  def cache(self: Dataset[T]) -> Dataset[T]:
+    raise NotImplementedError
+
+  def concatenate(self: Dataset[T], *ds: Dataset[T]) -> Dataset[T]:
+    datasets = (self, *ds)
+    d = self.from_pytree_slices(jnp.arange(len(datasets)))
+    return partial(at, datasets) >> d
 
   def enumerate(self: Dataset[T]) -> Dataset[tuple[int, T]]:
     """Yield (index, element) pairs.
@@ -259,6 +310,8 @@ class Dataset(Generic[T]):
     Returns:
       A new dataset that yields (index, element) pairs.
     """
+    # return self.scan(lambda i, el: (i + 1, el), jnp.zeros((), dtype=jnp.int32))
+
     if self._is_jittable:
       logging.info('dataset::Dataset.enumerate: jit compatible')
       transform = lambda next_fn: partial(
@@ -269,7 +322,9 @@ class Dataset(Generic[T]):
       return self.transform(transform)
 
     logging.info('dataset::Dataset.enumerate: not jit compatible')
-    return self.__class__(enumerate(self))
+    d = self.__class__(enumerate(self))
+    self._unusable = True
+    return d
 
   def filter(self: Dataset[T], f: Callable[[T], bool]) -> Dataset[T]:
     """Get a new dataset whose next_fn filters out elements.
@@ -290,10 +345,26 @@ class Dataset(Generic[T]):
       return self.transform(transform)
 
     logging.info('dataset::Dataset.filter: not jit compatible')
-    return self.__class__(filter(f, self))
+    d = self.__class__(filter(f, self))
+    self._unusable = True
+    return d
 
-  # TODO(danielwatson6): docs
   def flat_map(self: Dataset[T], f: Callable[[T], Dataset[U]]) -> Dataset[U]:
+    """Convert elements into datasets and flatten the result into one dataset.
+
+    This is just ``interleave`` with ``cycle_length=1`` and ``block_length=1``.
+    Dataset objects also allow to do this with monadic notation:
+
+    .. code-block:: python
+
+        d = f >> d  # same as `d = d.flat_map(f)`
+        d = d << f  # same as `d = d.flat_map(f)`
+
+    Args:
+      f: a callable that takes a pytree and returns a dataset.
+    Returns:
+      Flattened dataset.
+    """
     return self.interleave(f, cycle_length=1, block_length=1)
 
   def jit(self: Dataset[T], **jit_kwargs) -> Dataset[T]:
@@ -313,21 +384,36 @@ class Dataset(Generic[T]):
 
   # TODO(danielwatson6): implement
   # TODO(danielwatson6): docs
+  # TODO(danielwatson6): can we make this work with jit?
   def interleave(
       self: Dataset[T],
       f: Callable[[T], Dataset[U]],
       cycle_length: int = 1,
       block_length: int = 1,
   ) -> Dataset[U]:
+    """Map elements to datasets and interleave the results.
 
-    # TODO(danielwatson6) use typevars
-    def it() -> Iterator[PyTree]:
+    This is a generalization of flat map (i.e., `f >> d`), that allows to
+
+    Args:
+      f: a callable that takes a pytree and returns a dataset.
+      cycle_length: the number of original elements to process concurrently.
+      block_length: the number of consecutive elements to produce from each
+        original input element before cycling to another input element.
+    Returns:
+      Interleaved dataset.
+    """
+
+    def makeit() -> Iterator[U]:
       ...
 
-    d = self.__class__(it())
+    d = self.__class__(makeit())
     if self._is_jittable:
-      logging.warning('dataset::Dataset.interleave: disabling jit compatibility')
+      logging.warning(
+          'dataset::Dataset.interleave: disabling jit compatibility'
+      )
     assert not d._is_jittable
+    self._unusable = True
     return d
 
   def map(self: Dataset[T], f: Callable[[T], U]) -> Dataset[U]:
@@ -355,6 +441,7 @@ class Dataset(Generic[T]):
     else:
       logging.info('dataset::Dataset.peek: not jit compatible')
       d = self.__class__(itertools.chain([head], self))
+      self._unusable = True
 
     return head, d
 
@@ -374,7 +461,7 @@ class Dataset(Generic[T]):
     """
     prefetch_next = lambda it, q: q.put(next(it))
 
-    def it() -> Iterator[T]:
+    def makeit() -> Iterator[T]:
       q = queue.Queue(maxsize=bufsize)
       # We need to keep track of the dispatched futures to know when the dataset
       # is consumed, otherwise we will wait forever for the next element. This
@@ -399,15 +486,18 @@ class Dataset(Generic[T]):
           futures = [f for f in futures if not f.done()]
           assert len(futures) <= bufsize
 
-    d = self.__class__(it())
+    d = self.__class__(makeit())
     if self._is_jittable:
       # Logging level is intentional, prefetching from a jit compatible dataset
       # is an expected use case.
       logging.info('dataset::Dataset.prefetch: disabling jit compatibility')
     assert not d._is_jittable
+    self._unusable = True
     return d
 
-  # TODO(danielwatson6): is there a way to make this jittable?
+  # TODO(danielwatson6): can we make this work with jit?
+  # TODO(danielwatson6): memory usage? what does tf do?
+  # https://github.com/tensorflow/tensorflow/blob/v2.12.0/tensorflow/core/kernels/data/repeat_dataset_op.cc
   def repeat(self: Dataset[T], n: int | None = None) -> Dataset[T]:
     """Repeat the dataset n times (or infinitely if left unspecified).
 
@@ -423,43 +513,64 @@ class Dataset(Generic[T]):
     assert n is None or n > 0
 
     # `itertools.cycle` unfortunately caches the first cycle.
-    def it() -> Iterator[T]:
+    def makeit() -> Iterator[T]:
       i = 0
       it1 = self
       while (n is None or i < n):
-        # this also copies??? rippppp
+        # this also copies rippppp
         it1, it2 = itertools.tee(it1)
         yield from it2
         i += 1
 
-    d = self.__class__(it())
+    d = self.__class__(makeit())
     if self._is_jittable:
       logging.warning('dataset::Dataset.repeat: disabling jit compatibility')
     assert not d._is_jittable
+    self._unusable = True
     return d
 
-  # TODO(danielwatson6): docs
-  def shuffle(
-      self: Dataset[T], base_rng: jrandom.KeyArray, bufsize: int, axis: int = 0
-  ) -> Dataset[T]:
+  def scan(
+      self: Dataset[T],
+      f: Callable[[S, T], tuple[S, U]],
+      init: S,
+      length: int = 1,
+  ) -> Dataset[tuple[S, U]]:
     if self._is_jittable:
-      logging.info('dataset::Dataset.shuffle: jit compatible')
-      gather_fn = partial(jnp.take, axis=axis)
-    else:
-      logging.info('dataset::Dataset.shuffle: not jit compatible')
-      # Numpy is ok, `batch` already converts to numpy when not jit compatible.
-      gather_fn = partial(np.take, axis=axis)
+      logging.info('dataset::Dataset.scan: jit compatible')
+      def transform(next_fn: NextFn[T]) -> NextFn[tuple[S, U]]:
+        ...
+      return self.transform()
+
+    logging.info('dataset::Dataset.scan: not jit compatible')
+    ...
+
+  def shuffle(
+      self: Dataset[T], base_rng: jrandom.KeyArray, bufsize: int
+  ) -> Dataset[T]:
+    """Shuffle the dataset with buffers of given size.
+
+    Args:
+      base_rng: the base random key to use for shuffling.
+      bufsize: the size of the buffer to use for shuffling.
+    Returns:
+      A new dataset that shuffles the current dataset.
+    """
+    assert bufsize > 1
 
     def tree_shuffle(el: tuple[int, U]) -> U:
       i, data = el
       rng = jrandom.fold_in(base_rng, i)
       leaves = jtu.tree_leaves(data)
-      n = leaves[0].shape[axis]
-      assert all(a.shape[axis] == n for a in leaves[1:])
+      n = leaves[0].shape[0]
+      assert all(x.shape[0] == n for x in leaves[1:])
       perm = jrandom.permutation(rng, jnp.arange(n))
-      return jtu.tree_map(partial(gather_fn, indices=perm), data)
+      return jtu.tree_map(partial(at, indices=perm), data)
 
     return self.batch(bufsize).enumerate().map(tree_shuffle).unbatch()
+
+  # TODO
+  def skip(self: Dataset[T]) -> Dataset[T]:
+    raise NotImplementedError
 
   def sleep(self: Dataset[T], seconds: int | float) -> Dataset[T]:
     """Get a new dataset that sleeps for `seconds` before yielding an element.
@@ -488,6 +599,9 @@ class Dataset(Generic[T]):
       return sleepy_next_fn
     return self.transform(transform)
 
+  def take(self: Dataset[T]) -> Dataset[T]:
+    raise NotImplementedError
+
   def transform(
       self: Dataset[T], f: Callable[[NextFn[T]], NextFn[U]]
   ) -> Dataset[U]:
@@ -498,13 +612,16 @@ class Dataset(Generic[T]):
     Returns:
       A new dataset whose next_fn is a transform of the current next_fn.
     """
-    next_fn = f(self.__next__)
+    # Important: do not use `self.__next__`, it will trigger an `_unusable`
+    # check because it will call upstream `__next__` methods.
+    next_fn = f(self.next_fn)
+    # Python doesn't have `(_ while True)`, we use `iter(int, 1)` as infinity.
     d = self.__class__(next_fn() for _ in iter(int, 1))
     d._is_jittable = self._is_jittable
+    self._unusable = True
     return d
 
-  # TODO(danielwatson6): should we use `U` or `T` here? Technically same type,
-  # but the returned dataset will have different leaf shapes.
+  # TODO
   def unbatch(self: Dataset[T], axis: int = 0) -> Dataset[U]:
     """Get a new dataset that unbatches along the given axis.
 
@@ -530,8 +647,10 @@ class Dataset(Generic[T]):
       return d.transform(transform_fn)
 
     logging.info('dataset::Dataset.unbatch: not jit compatible')
-    # TODO(danielwatson6): this is wrong.
-    np_unstack = compose(tuple, partial(np.moveaxis, source=0, dest=axis))
-    return self.__class__(
+
+    # TODO
+    d = self.__class__(
         el for batch in d for el in jtu.tree_map(np_unstack, batch)
     )
+    self._unusable = True
+    return d
