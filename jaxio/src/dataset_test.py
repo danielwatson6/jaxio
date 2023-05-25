@@ -4,6 +4,7 @@
 # TODO(danielwatson6): test shuffle
 # TODO(danielwatson6): test sleep
 # TODO(danielwatson6): test unbatch
+# TODO(danielwatson6): test from_pytree_slices with actual pytree
 
 from functools import partial
 import time
@@ -11,7 +12,7 @@ import time
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
-import numpy as onp
+import numpy as np
 import pytest
 
 import jaxio
@@ -50,6 +51,7 @@ def test_as_jit_compatible():
 
 
 # TODO(danielwatson6): test batch axis.
+# TODO(danielwatson6): test nondeterministic
 def test_batch():
   n = 20
   b = 3
@@ -61,7 +63,7 @@ def test_batch():
   assert not d._is_jittable
   d_list = list(d)
   # TODO(danielwatson6): re-write this test to preserve type?
-  assert all(isinstance(x, onp.ndarray) for x in d_list)
+  assert all(isinstance(x, np.ndarray) for x in d_list)
   assert jnp.all(jnp.stack(d_list) == expected)
 
   # jit-compatible batch
@@ -185,6 +187,7 @@ def test_prefetch():
 
 
 # TODO(danielwatson6): test jit
+# TODO(danielwatson6): test memory usage
 def test_repeat():
   n = 3
 
@@ -210,18 +213,18 @@ def test_repeat():
 
 
 # TODO
-def test_shuffle():
-  seed = 42
-  n = 10
-  b = 3
+# def test_shuffle():
+#   seed = 42
+#   n = 10
+#   b = 3
 
-  rng = jrandom.PRNGKey(seed)
-  perms = [
-      jrandom.permutation(jrandom.fold_in(rng, i), jnp.arange(n))
-      for i in range(n // b)
-  ]
-  shuffle_with_perm_fn = partial(jnp.take, axis=axis)
-  jtu.tree_map(partial(gather_fn, indices=perm), el)
+#   rng = jrandom.PRNGKey(seed)
+#   perms = [
+#       jrandom.permutation(jrandom.fold_in(rng, i), jnp.arange(n))
+#       for i in range(n // b)
+#   ]
+#   shuffle_with_perm_fn = partial(jnp.take, axis=axis)
+#   jtu.tree_map(partial(gather_fn, indices=perm), el)
 
 
 def test_transform():
